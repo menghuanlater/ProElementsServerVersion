@@ -37,7 +37,6 @@ class MultiLabelsModel:
         self.__labels_set = labels_set
         self.__p = re.compile("(\d+_\d+_A_)|([\r\n])|(\s+)")
         self.__vocab = vocab
-        self.__word2vec_max_words = 200  # 控制文本最多取多少个词
         # 加载模型以及相关变量或者placeholder
         with self.__sess.as_default():
             with self.__sess.graph.as_default():
@@ -47,6 +46,7 @@ class MultiLabelsModel:
                     os.path.join(root_dir, "Model", q_type, scene)))
                 self.__graph = tf.get_default_graph()
                 self.__x_input = self.__graph.get_tensor_by_name("x_input:0")
+                self.__word2vec_max_words = self.__x_input.shape[1]
                 self.__is_train = self.__graph.get_tensor_by_name("is_training:0")
                 self.__logits = self.__graph.get_tensor_by_name("output/fully_connected/BiasAdd:0")
                 predicts = tf.nn.sigmoid(self.__logits) - 0.5
@@ -55,7 +55,7 @@ class MultiLabelsModel:
     def __encoding_x(self, voice_text):
         """
         :param voice_text: 原语音文本
-        :return: (1, 200, 200, 1)
+        :return: (1, ?, 300, 1) ==> max_words大小根据实际自行调整
         """
         vector = []
         voice_text = re.sub(self.__p, "", voice_text)
@@ -112,19 +112,19 @@ class ContentDetailModel:
         with self.__sess.as_default():
             with self.__sess.graph.as_default():
                 self.__model_saver = tf.train.import_meta_graph(
-                    os.path.join(root_dir, "Model", "内容细化", "model-50000.meta")
+                    os.path.join(root_dir, "Model", "ContentDetail", "model-20000.meta")
                 )
                 self.__model_saver.restore(self.__sess, tf.train.latest_checkpoint(
-                    os.path.join(root_dir, "Model", "内容细化")
+                    os.path.join(root_dir, "Model", "ContentDetail")
                 ))
                 self.__graph = tf.get_default_graph()
-                self.__is_training_holder = self.__graph.get_tensor_by_name("is_training:0")
+                # self.__is_training_holder = self.__graph.get_tensor_by_name("is_training:0")
                 self.__batch_size_holder = self.__graph.get_tensor_by_name("batch_size:0")
                 self.__keep_prob_holder = self.__graph.get_tensor_by_name("keep_prob:0")
                 self.__x_input_holder = self.__graph.get_tensor_by_name("x_input:0")
                 self.__x_length = self.__graph.get_tensor_by_name("x_length:0")
                 # greedy search
-                self.__sample_id = self.__graph.get_tensor_by_name("cond/decoder_1/transpose_1:0")
+                self.__sample_id = self.__graph.get_tensor_by_name("decoder_1/transpose_1:0")
 
     # 编码
     def __encoder_x(self, voice_text: str):
@@ -162,7 +162,6 @@ class ContentDetailModel:
         sample_id = self.__sess.run(
             self.__sample_id,
             feed_dict={
-                self.__is_training_holder: False,
                 self.__batch_size_holder: 1,
                 self.__keep_prob_holder: 1.0,
                 self.__x_input_holder: np.array([x]),
@@ -215,11 +214,11 @@ class InterfaceForProElements:
         self.__p = re.compile("(\d+_\d+_A_)")
         self.__support_scenes = {"ydwlxhc", "kdgz", "kdwsm"}
         # jieba自定义词 ==> 需要区分两个jieba分词环境
-        for t in ["4g网", "四g网", "4g", "四g", "3g网", "3g", "二三四g", "二三四g网",
+        for t in ["4g网", "四g网", "4g", "四g", "3g网", "3g", "二三四g", "二三四g网", "wifi", "Wifi",
                   "三g网", "三g", "5g网", "5g", "五g网", "五g", "两g网", "两g", "2g网", "2g"]:
             jieba.add_word(t, 1000, "hebei_dianxin")
         self.__model_dic = dict()
-        wv_obj = Word2Vec.load(os.path.join(self.__root_dir, "ModelOutput", "Model", "text2vec", "all_word2vec200_cbow.m"))
+        wv_obj = Word2Vec.load(os.path.join(self.__root_dir, "ModelOutput", "Model", "text2vec", "all_word2vec300_cbow.m"))
         vocab = list(wv_obj.wv.vocab.keys())
         self.__model_dic["kdgz_phenomenon"] = MultiLabelsModel(
             labels_set=["标准故障-亮红灯", "标准故障-猫正常", "标准故障-其他", "691-密码错误", "691-身份核实失败",
@@ -227,11 +226,11 @@ class InterfaceForProElements:
                         "691-无接入信息", "宽带-打不开网页", "678/651-亮红灯", "678/651-猫正常", "宽带-掉线",
                         "宽带-其他错误提示", "其他",
                         "宽带-线路故障", "宽带-大面积故障"]
-            , scene="宽带故障", q_type="问题现象",
+            , scene="kdgz", q_type="phenomenon",
             root_dir=os.path.join(self.__root_dir, "ModelOutput"), wv_obj=wv_obj, vocab=vocab)
 
         self.__model_dic["kdgz_instance"] = MultiLabelsModel(
-            labels_set=["宽带网络", "宽带线路", "光纤猫", "服务类", "其他"], scene="宽带故障", q_type="涉及对象",
+            labels_set=["宽带网络", "宽带线路", "光纤猫", "服务类", "其他"], scene="kdgz", q_type="related_obj",
             root_dir=os.path.join(self.__root_dir, "ModelOutput"), wv_obj=wv_obj, vocab=vocab)
 
         self.__model_dic["ydwlxhc_phenomenon"] = MultiLabelsModel(
@@ -244,21 +243,26 @@ class InterfaceForProElements:
                         "VOLTE-信号弱/不稳定",
                         "VOLTE-回音/杂音/断续", "VOLTE-掉话", "VOLTE-省内漫游质量", "VOLTE-本省漫出",
                         "VOLTE-外省漫入", "VOLTE-其他"]
-            , scene="移动网络信号差", q_type="问题现象",
+            , scene="ydwlxhc", q_type="phenomenon",
             root_dir=os.path.join(self.__root_dir, "ModelOutput"), wv_obj=wv_obj, vocab=vocab)
 
         self.__model_dic["ydwlxhc_instance"] = MultiLabelsModel(
-            labels_set=["移动网络", "手机上网", "移动语音", "服务类", "其他"], scene="移动网络信号差", q_type="涉及对象",
+            labels_set=["移动网络", "手机上网", "移动语音", "服务类", "其他"], scene="ydwlxhc", q_type="related_obj",
             root_dir=os.path.join(self.__root_dir, "ModelOutput"), wv_obj=wv_obj, vocab=vocab)
 
         self.__model_dic["kdwsm_phenomenon"] = MultiLabelsModel(
             labels_set=["宽带-网速慢", "宽带-打开网页慢", "宽带-带宽速率不够", "宽带-玩网游卡", "宽带-看视频卡",
                         "宽带-下载慢", "宽带-网络延迟高", "宽带-图片信息读取慢", "其他"],
-            scene="宽带网速慢", q_type="问题现象", root_dir=os.path.join(self.__root_dir, "ModelOutput"), wv_obj=wv_obj, vocab=vocab)
+            scene="kdwsm", q_type="phenomenon", root_dir=os.path.join(self.__root_dir, "ModelOutput"), wv_obj=wv_obj, vocab=vocab)
 
         self.__model_dic["kdwsm_instance"] = MultiLabelsModel(
             labels_set=["宽带网络", "宽带速率", "服务类", "其他"],
-            scene="宽带网速慢", q_type="涉及对象", root_dir=os.path.join(self.__root_dir, "ModelOutput"), wv_obj=wv_obj, vocab=vocab)
+            scene="kdwsm", q_type="related_obj", root_dir=os.path.join(self.__root_dir, "ModelOutput"), wv_obj=wv_obj, vocab=vocab)
+
+        self.__model_dic["nps"] = MultiLabelsModel(
+            labels_set=["网络", "服务", "业务", "其他"],
+            scene="all", q_type="nps", root_dir=os.path.join(self.__root_dir, "ModelOutput"), wv_obj=wv_obj, vocab=vocab
+        )
 
         # 基于Bi-LSTM S2S Attention的生成式摘要
         self.__model_dic["content_detail"] = ContentDetailModel(root_dir=os.path.join(self.__root_dir, "ModelOutput"),
@@ -286,7 +290,7 @@ class InterfaceForProElements:
         scene = self.__scene_map[input_dic['env']]
 
         output_dic['data'][0]['instance'] = self.__get_instance(scene=scene, voice_text=input_dic['content'])
-        output_dic['data'][0]['nps_element'] = self.__get_nps_element()
+        output_dic['data'][0]['nps_element'] = self.__get_nps_element(voice_text=input_dic['content'])
         output_dic['data'][0]['refinement'] = self.__get_refinement(voice_text=input_dic['content'])
         output_dic['data'][0]['phenomenon'] = self.__get_phenomenon(scene=scene, voice_text=input_dic['content'])
 
@@ -309,9 +313,8 @@ class InterfaceForProElements:
         return self.__model_dic["%s_instance" % scene].predict(voice_text)
 
     # 获取NPS要素的结果(6.18版本只返回网络) // 考虑后续模型集成
-    @staticmethod
-    def __get_nps_element():
-        return "网络"
+    def __get_nps_element(self, voice_text):
+        return self.__model_dic["nps"].predict(voice_text)
 
     def __del__(self):
         pass
